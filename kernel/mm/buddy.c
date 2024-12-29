@@ -1,19 +1,28 @@
 #define MAX_ORDER 15
 #define MAX_PAGE_NUM  32768 // 如果太大可以减小，定义物理页面的最大数量
 
-// 伙伴id，互为伙伴的块从中取出一个id，并标记为使用
-static int buddy_id[32768]; 
+// 位图数组，表示每个物理页的分配状态
+static unsigned long buddy_bitmap[MAX_PAGE_NUM / 64];
 
-/* 
-后面的所有物理页地址都指的是mem_map数组中的索引，
-这些索引是用来标识物理页在内存中的位置。
-*/
+// 设置位图某一位为1
+static inline void set_bit(int idx) {
+    buddy_bitmap[idx / 64] |= (1UL << (idx % 64));
+}
+
+// 设置位图某一位为0
+static inline void clear_bit(int idx) {
+    buddy_bitmap[idx / 64] &= ~(1UL << (idx % 64));
+}
+
+// 检查位图某一位是否为1
+static inline int test_bit(int idx) {
+    return buddy_bitmap[idx / 64] & (1UL << (idx % 64));
+}
 
 // 空闲表节点，表示每个空闲块的信息
 typedef struct buddy_free_node
 {
     int page_index_start; // 空闲块起始页的索引
-    int buddy_id;         // 该块对应的伙伴的ID
 } buddy_free_node;
 
 // 空闲表结构，表示所有的空闲块，按阶数分组
@@ -36,7 +45,6 @@ typedef struct buddy_free_table
 typedef struct buddy_occu_node
 {
     int page_index_start; // 已分配块的起始页索引
-    int buddy_id;         // 该块的伙伴ID
 } buddy_occu_node;
 
 // 分配表结构，记录已分配的块信息
@@ -53,16 +61,16 @@ static buddy_free_table free_table;
 static buddy_occu_table occu_table;
 
 // 初始化伙伴系统
-// 初始化空闲表、分配表和伙伴ID数组
+// 初始化空闲表、分配表和位图
 void init_buddy() {
-    // 初始化伙伴ID数组，每个物理页分配一个唯一ID，ID值从0开始
-    for (int i = 0; i < MAX_PAGE_NUM; i++) {
-        buddy_id[i] = i;
+    // 初始化位图，所有位都清零，表示物理页未分配
+    for (int i = 0; i < MAX_PAGE_NUM / 64; i++) {
+        buddy_bitmap[i] = 0;
     }
     
     // 初始化空闲表，设置每个阶数的栈顶为-1，表示栈为空
     for (int i = 0; i <= MAX_ORDER; i++) {
-        free_table.stack_top[i] = -1;  
+        free_table.stack_top[i] = -1;
     }
     
     // 初始化分配表，设置每个阶数的栈顶为-1，表示栈为空
@@ -73,7 +81,9 @@ void init_buddy() {
     // 初始时，将整个内存作为一个大块放入最高阶的空闲表中
     free_table.stack_top[MAX_ORDER] = 0;
     free_table.table[MAX_ORDER][0].page_index_start = 0;
-    free_table.table[MAX_ORDER][0].buddy_id = buddy_id[0];
+    
+    // 将整个物理页标记为已分配
+    set_bit(0);
 }
 
 // 计算所需的阶数（根据请求的大小）
@@ -103,7 +113,6 @@ int get_page_buddy(int size) {
             // 找到可用的空闲块
             int stack_index = free_table.stack_top[current_order];
             int page_start = free_table.table[current_order][stack_index].page_index_start;
-            int current_buddy_id = free_table.table[current_order][stack_index].buddy_id;
             
             // 从空闲表移除该块（栈操作）
             free_table.stack_top[current_order]--;
@@ -111,7 +120,6 @@ int get_page_buddy(int size) {
             // 将块添加到分配表中
             occu_table.stack_top[order]++;
             occu_table.table[order][occu_table.stack_top[order]].page_index_start = page_start;
-            occu_table.table[order][occu_table.stack_top[order]].buddy_id = current_buddy_id;
             
             // 如果块太大，需要进行分割
             while (current_order > order) {
@@ -121,9 +129,11 @@ int get_page_buddy(int size) {
                 // 将分割出的伙伴块加入空闲表
                 free_table.stack_top[current_order]++;
                 free_table.table[current_order][free_table.stack_top[current_order]].page_index_start = buddy_page;
-                free_table.table[current_order][free_table.stack_top[current_order]].buddy_id = buddy_id[buddy_page];
             }
             
+            // 标记该块为已分配
+            set_bit(page_start);
+
             return page_start;
         }
         current_order++;
@@ -153,13 +163,14 @@ void free_buddy_page(int page) {
     if (found_order == -1) return;  // 页面未被分配，释放失败
     
     // 从分配表中移除该块（栈操作）
-    int current_buddy_id = occu_table.table[found_order][found_index].buddy_id;
     for (int i = found_index; i < occu_table.stack_top[found_order]; i++) {
         // 手动复制数组元素
         occu_table.table[found_order][i].page_index_start = occu_table.table[found_order][i + 1].page_index_start;
-        occu_table.table[found_order][i].buddy_id = occu_table.table[found_order][i + 1].buddy_id;
     }
     occu_table.stack_top[found_order]--;
+    
+    // 标记该页面为未分配
+    clear_bit(page);
     
     // 释放后尝试能否合并相邻伙伴块
     int current_order = found_order;
@@ -179,7 +190,6 @@ void free_buddy_page(int page) {
                 for (int j = i; j < free_table.stack_top[current_order]; j++) {
                     // 手动复制数组元素
                     free_table.table[current_order][j].page_index_start = free_table.table[current_order][j + 1].page_index_start;
-                    free_table.table[current_order][j].buddy_id = free_table.table[current_order][j + 1].buddy_id;
                 }
                 free_table.stack_top[current_order]--;
                 
@@ -196,5 +206,4 @@ void free_buddy_page(int page) {
     // 将合并后的块加入空闲表
     free_table.stack_top[current_order]++;
     free_table.table[current_order][free_table.stack_top[current_order]].page_index_start = current_page;
-    free_table.table[current_order][free_table.stack_top[current_order]].buddy_id = current_buddy_id;
 }

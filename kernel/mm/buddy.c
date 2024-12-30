@@ -66,10 +66,9 @@ void* buddy_malloc(size_t size) {
 }
 
 // 手动释放内存区域，模拟 `free`
-// 这里只做标记，实际场景中需要更复杂的内存管理机制
+// 这里只做标记，不做实现
 void buddy_free(void* ptr) {
-    // 不做任何处理
-    // 实际上，`buddy_malloc` 没有真正的释放机制，只是简单地标记
+    
 }
 
 // 初始化伙伴系统

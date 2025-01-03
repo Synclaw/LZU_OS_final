@@ -67,9 +67,6 @@ static buddy_occu_table occu_table;
 // 定义一个进程内存表
 static process_memory_table process_mem_table;
 
-// 用于记录每次大块分配到的小块（二维数组）
-static int allocation_map[MAX_PAGE_NUM / 64][MAX_ORDER + 1]; // 记录大块分配的小块信息
-
 // 手动分配内存区域，模拟 `malloc`
 void* buddy_malloc(size_t size) {
     static unsigned char memory_pool[MAX_MEMORY_SIZE]; // 每个页大小为 4096 字节
@@ -151,7 +148,6 @@ int get_page_buddy(size_t size) {
         int current_order = required_order;
         int allocated_page_start = -1;
 
-<<<<<<< HEAD
         // 查找合适的空闲块
         while (current_order <= MAX_ORDER) {
             if (free_table.head[current_order] != NULL) {
@@ -160,92 +156,6 @@ int get_page_buddy(size_t size) {
                 allocated_page_start = node->page_index_start;
 
                 // 从空闲表中移除该块
-=======
-            // 标记该块为已分配
-            set_bit(page_start);
-            allocation_map[page_start / 64][current_order] = 1;
-
-            // 将块添加到分配表中
-            buddy_occu_node *occu_node = (buddy_occu_node*)buddy_malloc(sizeof(buddy_occu_node));
-            occu_node->page_index_start = page_start;
-            occu_node->prev = NULL;
-            occu_node->next = occu_table.head[order];
-            if (occu_table.head[order] != NULL) {
-                occu_table.head[order]->prev = occu_node;
-            }
-            occu_table.head[order] = occu_node;
-            if (occu_table.tail[order] == NULL) {
-                occu_table.tail[order] = occu_node;
-            }
-
-            return page_start;
-        }
-        current_order++;
-    }
-
-    return -1;  // 无法找到合适的空闲块
-}
-
-// 释放已分配的物理页
-void free_buddy_page(int page) {
-    // 查找要释放的页面在分配表中的位置
-    int found_order = -1;
-    buddy_occu_node *found_node = NULL;
-
-    // 使用 allocation_map 快速定位大块
-    for (int order = 0; order < MAX_ORDER; order++) {
-        int map_index = page / 64;
-        if (allocation_map[map_index][order] == 1) {
-            found_order = order;
-            break;
-        }
-    }
-
-    if (found_order == -1) return;  // 页面未被分配，释放失败
-
-    // 从分配表中移除该块
-    for (buddy_occu_node *node = occu_table.head[found_order]; node != NULL; node = node->next) {
-        if (node->page_index_start == page) {
-            found_node = node;
-            break;
-        }
-    }
-
-    if (found_node == NULL) return;  // 未找到对应的节点，释放失败
-
-    if (occu_table.head[found_order] == found_node) {
-        occu_table.head[found_order] = found_node->next;
-    }
-    if (occu_table.tail[found_order] == found_node) {
-        occu_table.tail[found_order] = found_node->prev;
-    }
-    if (found_node->prev != NULL) {
-        found_node->prev->next = found_node->next;
-    }
-    if (found_node->next != NULL) {
-        found_node->next->prev = found_node->prev;
-    }
-
-    // 标记该页面为未分配
-    clear_bit(page);
-    allocation_map[page / 64][found_order] = 0;
-
-    // 释放后尝试能否合并相邻伙伴块
-    int current_order = found_order;
-    int current_page = page;
-
-    while (current_order < MAX_ORDER) {
-        int buddy_page = current_page ^ (1 << current_order);  // 计算伙伴块的地址
-        int found_buddy = 0;
-
-        // 在空闲表中查找伙伴块
-        for (buddy_free_node *node = free_table.head[current_order]; node != NULL; node = node->next) {
-            if (node->page_index_start == buddy_page) {
-                // 找到伙伴块，可以合并
-                found_buddy = 1;
-
-                // 从空闲表中移除伙伴块
->>>>>>> 2cd08a78a3b57223b6636d2c1eec2fc526552622
                 if (free_table.head[current_order] == node) {
                     free_table.head[current_order] = node->next;
                 }
@@ -259,7 +169,6 @@ void free_buddy_page(int page) {
                     node->next->prev = node->prev;
                 }
 
-<<<<<<< HEAD
                 // 将块添加到分配表中
                 buddy_occu_node *occu_node = (buddy_occu_node*)buddy_malloc(sizeof(buddy_occu_node));
                 occu_node->page_index_start = allocated_page_start;
@@ -308,17 +217,10 @@ void free_buddy_page(int page) {
                 remaining_size -= node->size * 4096; // 已分配的内存大小，以字节为单位
 
                 break; // 成功分配一个块，跳出当前循环
-=======
-                // 合并块
-                current_page = current_page & buddy_page;
-                current_order++;
-                break;
->>>>>>> 2cd08a78a3b57223b6636d2c1eec2fc526552622
             }
             current_order++;
         }
 
-<<<<<<< HEAD
         // 如果未能找到合适的空闲块，则返回错误
         if (allocated_page_start == -1) {
             // 回收已分配的内存块
@@ -353,24 +255,3 @@ void free_buddy_page() {
     // 清空进程内存链表
     process_mem_table.head = NULL;
 }
-=======
-        if (!found_buddy) {
-            // 没有找到伙伴块，停止合并
-            break;
-        }
-    }
-
-    // 将合并后的块添加到空闲表中
-    buddy_free_node *new_node = (buddy_free_node *)malloc(sizeof(buddy_free_node));
-    new_node->page_index_start = current_page;
-    new_node->next = free_table.head[current_order];
-    new_node->prev = NULL;
-    if (free_table.head[current_order] != NULL) {
-        free_table.head[current_order]->prev = new_node;
-    }
-    free_table.head[current_order] = new_node;
-    if (free_table.tail[current_order] == NULL) {
-        free_table.tail[current_order] = new_node;
-    }
-}
->>>>>>> 2cd08a78a3b57223b6636d2c1eec2fc526552622

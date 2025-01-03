@@ -50,6 +50,9 @@ typedef struct buddy_occu_table {
 static buddy_free_table free_table;
 static buddy_occu_table occu_table;
 
+// 用于记录每次大块分配到的小块（二维数组）
+static int allocation_map[MAX_PAGE_NUM / 64][MAX_ORDER + 1]; // 记录大块分配的小块信息
+
 // 手动分配内存区域，模拟 `malloc`
 // 分配一个指定大小的内存块，返回该块的指针
 void* buddy_malloc(size_t size) {
@@ -143,6 +146,10 @@ int get_page_buddy(int size) {
                 node->next->prev = node->prev;
             }
 
+            // 标记该块为已分配
+            set_bit(page_start);
+            allocation_map[page_start / 64][current_order] = 1;
+
             // 将块添加到分配表中
             buddy_occu_node *occu_node = (buddy_occu_node*)buddy_malloc(sizeof(buddy_occu_node));
             occu_node->page_index_start = page_start;
@@ -155,28 +162,6 @@ int get_page_buddy(int size) {
             if (occu_table.tail[order] == NULL) {
                 occu_table.tail[order] = occu_node;
             }
-
-            // 如果块太大，需要进行分割
-            while (current_order > order) {
-                current_order--;
-                int buddy_page = page_start + (1 << current_order);
-
-                // 将分割出的伙伴块加入空闲表
-                buddy_free_node *new_free_node = (buddy_free_node*)buddy_malloc(sizeof(buddy_free_node));
-                new_free_node->page_index_start = buddy_page;
-                new_free_node->prev = NULL;
-                new_free_node->next = free_table.head[current_order];
-                if (free_table.head[current_order] != NULL) {
-                    free_table.head[current_order]->prev = new_free_node;
-                }
-                free_table.head[current_order] = new_free_node;
-                if (free_table.tail[current_order] == NULL) {
-                    free_table.tail[current_order] = new_free_node;
-                }
-            }
-
-            // 标记该块为已分配
-            set_bit(page_start);
 
             return page_start;
         }
@@ -192,20 +177,27 @@ void free_buddy_page(int page) {
     int found_order = -1;
     buddy_occu_node *found_node = NULL;
 
+    // 使用 allocation_map 快速定位大块
     for (int order = 0; order < MAX_ORDER; order++) {
-        for (buddy_occu_node *node = occu_table.head[order]; node != NULL; node = node->next) {
-            if (node->page_index_start == page) {
-                found_order = order;
-                found_node = node;
-                break;
-            }
+        int map_index = page / 64;
+        if (allocation_map[map_index][order] == 1) {
+            found_order = order;
+            break;
         }
-        if (found_order != -1) break;
     }
 
     if (found_order == -1) return;  // 页面未被分配，释放失败
 
     // 从分配表中移除该块
+    for (buddy_occu_node *node = occu_table.head[found_order]; node != NULL; node = node->next) {
+        if (node->page_index_start == page) {
+            found_node = node;
+            break;
+        }
+    }
+
+    if (found_node == NULL) return;  // 未找到对应的节点，释放失败
+
     if (occu_table.head[found_order] == found_node) {
         occu_table.head[found_order] = found_node->next;
     }
@@ -221,6 +213,7 @@ void free_buddy_page(int page) {
 
     // 标记该页面为未分配
     clear_bit(page);
+    allocation_map[page / 64][found_order] = 0;
 
     // 释放后尝试能否合并相邻伙伴块
     int current_order = found_order;
@@ -250,21 +243,24 @@ void free_buddy_page(int page) {
                     node->next->prev = node->prev;
                 }
 
-                // 准备下一次合并
-                current_page = (current_page < buddy_page) ? current_page : buddy_page;
+                // 合并块
+                current_page = current_page & buddy_page;
                 current_order++;
                 break;
             }
         }
 
-        if (!found_buddy) break;  // 没有找到伙伴，停止合并
+        if (!found_buddy) {
+            // 没有找到伙伴块，停止合并
+            break;
+        }
     }
 
-    // 将合并后的块加入空闲表
-    buddy_free_node *new_node = (buddy_free_node*)buddy_malloc(sizeof(buddy_free_node));
+    // 将合并后的块添加到空闲表中
+    buddy_free_node *new_node = (buddy_free_node *)malloc(sizeof(buddy_free_node));
     new_node->page_index_start = current_page;
-    new_node->prev = NULL;
     new_node->next = free_table.head[current_order];
+    new_node->prev = NULL;
     if (free_table.head[current_order] != NULL) {
         free_table.head[current_order]->prev = new_node;
     }

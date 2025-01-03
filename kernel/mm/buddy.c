@@ -240,7 +240,7 @@ int get_page_buddy(size_t size) {
 }
 
 // 释放进程所占用的内存
-void free_buddy_page() {
+void free_buddy_page(int page_index_start) {
     process_memory_node *node = process_mem_table.head;
     while (node != NULL) {
         // 将内存块释放
